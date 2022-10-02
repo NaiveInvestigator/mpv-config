@@ -1,5 +1,5 @@
 # mpv-config
-My personal mpv config (for windows only).
+My personal mpv config (Tested on Windows Only).
 # Requirements
 Download and install all these and add them to your [path](https://helpdeskgeek.com/windows-10/add-windows-path-environment-variable/).
 * [python](https://www.python.org/downloads/)
