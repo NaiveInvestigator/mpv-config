@@ -11,7 +11,7 @@ local options = {
     python_path = ON_WINDOWS and "python" or "python3",
 
     -- Categories to fetch
-    categories = "sponsor,intro,outro,interaction,selfpromo",
+    categories = "sponsor,intro,outro,interaction,selfpromo,filler",
 
     -- Categories to skip automatically
     skip_categories = "sponsor",
@@ -84,9 +84,12 @@ mp.options = require "mp.options"
 mp.options.read_options(options, "sponsorblock")
 
 local legacy = mp.command_native_async == nil
+--[[
 if legacy then
     options.local_database = false
 end
+--]]
+options.local_database = false
 
 local utils = require "mp.utils"
 scripts_dir = mp.find_config_file("scripts")
@@ -105,7 +108,7 @@ local fade_timer = nil
 local fade_dir = nil
 local volume_before = mp.get_property_number("volume")
 local categories = {}
-local all_categories = {"sponsor", "intro", "outro", "interaction", "selfpromo", "music_offtopic"}
+local all_categories = {"sponsor", "intro", "outro", "interaction", "selfpromo", "preview", "music_offtopic", "filler"}
 local chapter_cache = {}
 
 for category in string.gmatch(options.skip_categories, "([^,]+)") do
@@ -395,8 +398,9 @@ function file_loaded()
         "/embed/([%w-_]+).*"
     }
     youtube_id = nil
-    for i,url in ipairs(urls) do 
+    for i, url in ipairs(urls) do 
         youtube_id = youtube_id or string.match(video_path, url) or string.match(video_referer, url)
+        if youtube_id then break end
     end
     youtube_id = youtube_id or string.match(video_path, options.local_pattern)
     
