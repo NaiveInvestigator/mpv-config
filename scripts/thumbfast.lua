@@ -36,6 +36,9 @@ local options = {
     -- Enable on audio playback
     audio = false,
 
+    -- Enable hardware decoding
+    hwdec = false,
+
     -- Windows only: don't use subprocess to communicate with socket
     use_lua_io = false
 }
@@ -288,6 +291,8 @@ local function spawn(time)
 
     remove_thumbnail_files()
 
+    local mpv_hwdec = "no"
+    if options.hwdec then mpv_hwdec = "auto" end
     mp.command_native_async(
         {name = "subprocess", playback_only = true, args = {
             "mpv", path, "--no-config", "--msg-level=all=no", "--idle", "--pause", "--keep-open=always", "--really-quiet", "--no-terminal",
@@ -295,7 +300,7 @@ local function spawn(time)
             "--input-ipc-server="..options.socket,
             "--start="..time, "--hr-seek=no",
             "--ytdl-format=worst", "--demuxer-readahead-secs=0", "--demuxer-max-bytes=128KiB",
-            "--vd-lavc-skiploopfilter=all", "--vd-lavc-software-fallback=1", "--vd-lavc-fast",
+            "--vd-lavc-skiploopfilter=all", "--vd-lavc-software-fallback=1", "--vd-lavc-fast", "--hwdec="..mpv_hwdec,
             "--vf="..vf_string(filters_all, true),
             "--sws-allow-zimg=no", "--sws-fast=yes", "--sws-scaler=fast-bilinear",
             "--video-rotate="..last_rotate,
