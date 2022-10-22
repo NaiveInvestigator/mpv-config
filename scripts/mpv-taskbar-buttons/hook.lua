@@ -18,25 +18,26 @@
     https://www.gnu.org/licenses/gpl-2.0.html
 --]]
 
--- can't use get_script_directory because this comes into existence through load-script
+-- can't use mp.get_script_directory() because this is loaded through load-script, which lacks context
 local script_dir = debug.getinfo(1, "S").source:sub(2):match("(.*/)") -- https://stackoverflow.com/a/23535333
 package.path = script_dir .. "\\?.lua;" .. package.path
 
 local ffi = require("ffi")
-local debug = require("debug")
 local common = require("common")
 local C = ffi.C
 
+local options = nil
+
 local callbacks = {
-    [common.button_ids[C.BUTTON_PREV]] = function() mp.command(common.user_opts.prev_command == "" and "playlist-prev" or common.user_opts.prev_command) end,
+    [common.button_ids[C.BUTTON_PREV]] = function() mp.command(options.prev_command == "" and "playlist-prev" or options.prev_command) end,
     [common.button_ids[C.BUTTON_PLAY_PAUSE]] = function()
-        if common.user_opts.play_pause_command == "" then
+        if options.play_pause_command == "" then
             mp.commandv("cycle", "pause")
         else
-            mp.command(common.user_opts.play_pause_command)
+            mp.command(options.play_pause_command)
         end
     end,
-    [common.button_ids[C.BUTTON_NEXT]] = function() mp.command(common.user_opts.next_command == "" and "playlist-next" or common.user_opts.next_command) end
+    [common.button_ids[C.BUTTON_NEXT]] = function() mp.command(options.next_command == "" and "playlist-next" or options.next_command) end
 }
 
 ffi.cdef [[
@@ -103,8 +104,10 @@ local function generate_hook_callback()
         void *tcc_get_symbol(TCCState *s, const char *name);
     ]]
 
-    local tcc =  ffi.load(script_dir .. "/libtcc.dll")
+    local tcc = ffi.load(options.tcc_dll_path)
+    assert(tcc)
     local state = tcc.tcc_new()
+    assert(state)
     tcc.tcc_set_output_type(state, 1) -- TCC_OUTPUT_MEMORY
     tcc.tcc_set_options(state, "-nostdinc -nostdlib")
     local hook = [[
@@ -131,11 +134,11 @@ local function generate_hook_callback()
             goto cont;
 
         const LPMSG msg = (LPMSG)lParam;
-        if (!msg || msg->message != #WM_COMMAND# || msg->hwnd != (void*)#mpv_hwnd#)
-            goto cont;
+        if (msg && msg->message == #WM_COMMAND# && msg->hwnd == (void*)#mpv_hwnd#) {
+            int const wmId = ((unsigned short)(((unsigned __int64)(msg->wParam)) & 0xffff)); // LOWORD
+            if (wmId < #BUTTON_FIRST# || wmId > #BUTTON_LAST#)
+                goto cont;
 
-        int const wmId = ((unsigned short)(((unsigned __int64)(msg->wParam)) & 0xffff)); // LOWORD
-        if (wmId >= #BUTTON_FIRST# && wmId <= #BUTTON_LAST#) {
             int volatile *const last_button_hit = (int*)#last_button_hit#;
             void* volatile const hCommandReceivedEvent = (void*)#hCommandReceivedEvent#;
             volatile const SETEVENT SetEvent = (SETEVENT)#SetEvent#;
@@ -193,11 +196,11 @@ local function start()
     if mpv_tid == 0 then
         return
     end
-    common.read_options()
+    options = common.read_options()
     lpCompiledCallback, lpGetMsgProc = generate_hook_callback()
     hHook = C.SetWindowsHookExW(WH_GETMESSAGE, lpGetMsgProc, nil, mpv_tid)
     if hHook then
-        -- allow unelevated Explorer to send message to mpv running as adminstrator
+        -- allow unelevated Explorer to post WM_COMMAND to mpv running as adminstrator
         C.ChangeWindowMessageFilterEx(mpv_hwnd, WM_COMMAND, MSGFLT_ADD, nil)
     end
 
@@ -220,10 +223,12 @@ _G.mp_event_loop = function()
             local dwStatus = C.WaitForMultipleObjects(nEventCount, hEvents, false, dwTimeout - dwElapsed)
             if dwStatus == WAIT_OBJECT_0 then --hMpvWakeupEvent signalled
                 mp.dispatch_events(false)
-            elseif dwStatus == 1 then -- hCommandReceivedEvent signalled
+                -- break? new timers might have been introduced
+            elseif dwStatus == WAIT_OBJECT_0 + 1 then -- hCommandReceivedEvent signalled
                 local wmId = last_button_hit[0]
                 if callbacks[wmId] then
                     callbacks[wmId]()
+                    -- if your modified callbacks introduce timers, break here
                 end
             end
 
@@ -233,7 +238,7 @@ _G.mp_event_loop = function()
 
             dwElapsed = (mp.get_time() * 1000) - dwStart
             if dwElapsed < dwTimeout then
-                -- should re-call mp.get_next_timeout() here and break if it's less than dwTimeout
+                -- re-call mp.get_next_timeout() here and break if less than dwTimeout?
                 -- continue
             else -- timed out
                 mp.dispatch_events(false)
@@ -248,14 +253,14 @@ _G.mp_event_loop = function()
         hHook = nil
     end
     if lpCompiledCallback ~= nil then
+        lpGetMsgProc = nil
         C.GlobalFree(lpCompiledCallback)
         lpCompiledCallback = nil
-        lpGetMsgProc = nil
     end
     mpv_set_wakeup_callback(script_ctx.mpv_handle_client, nil, nil)
-    if hEvents then
+    if hEvents ~= nil then
         for i = 0, nEventCount - 1 do
-            if hEvents[i] then
+            if hEvents[i] ~= nil then
                 C.CloseHandle(hEvents[i])
                 hEvents[i] = nil
             end
@@ -263,7 +268,7 @@ _G.mp_event_loop = function()
         C.GlobalFree(hEvents)
         hEvents = nil
     end
-    if last_button_hit then
+    if last_button_hit ~= nil then
         C.GlobalFree(last_button_hit)
         last_button_hit = nil
     end
