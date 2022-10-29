@@ -1,5 +1,5 @@
---[[ uosc 4.3.0 - 2022-Oct-11 | https://github.com/tomasklaen/uosc ]]
-local uosc_version = '4.3.0'
+--[[ uosc 4.4.0 - 2022-Oct-28 | https://github.com/tomasklaen/uosc ]]
+local uosc_version = '4.4.0'
 
 assdraw = require('mp.assdraw')
 opt = require('mp.options')
@@ -31,6 +31,7 @@ defaults = {
 	timeline_border = 1,
 	timeline_step = 5,
 	timeline_chapters_opacity = 0.8,
+	timeline_cache = true,
 
 	controls = 'menu,gap,subtitles,<has_many_audio>audio,<has_many_video>video,<has_many_edition>editions,<stream>stream-quality,gap,space,speed,space,shuffle,loop-playlist,loop-file,gap,prev,items,next,gap,fullscreen',
 	controls_size = 32,
