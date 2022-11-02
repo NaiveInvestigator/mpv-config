@@ -32,7 +32,7 @@ local options = {
     hwdec = false,
 
     -- Windows only: use native Windows API to write to pipe (requires LuaJIT)
-    use_lua_io = false
+    direct_io = false
 }
 
 mp.utils = require "mp.utils"
@@ -60,7 +60,7 @@ function subprocess(args, async, callback)
 end
 
 local winapi = {}
-if options.use_lua_io then
+if options.direct_io then
     local ffi_loaded, ffi = pcall(require, "ffi")
     if ffi_loaded then
         winapi = {
@@ -107,13 +107,14 @@ if options.use_lua_io then
         end
 
     else
-        options.use_lua_io = false
+        options.direct_io = false
     end
 end
 
 local spawned = false
 local network = false
 local disabled = false
+local spawn_waiting = false
 
 local x = nil
 local y = nil
@@ -126,6 +127,8 @@ local effective_w = options.max_width
 local effective_h = options.max_height
 local real_w = nil
 local real_h = nil
+local last_real_w = nil
+local last_real_h = nil
 
 local script_name = nil
 
@@ -144,9 +147,31 @@ local last_rotate = 0
 local par = ""
 local last_par = ""
 
+local last_has_vid = 0
+local has_vid = 0
+
 local file_timer = nil
 local file_check_period = 1/60
 local first_file = false
+
+local function debounce(func, wait)
+    func = type(func) == "function" and func or function() end
+    wait = type(wait) == "number" and wait / 1000 or 0
+
+    local timer = nil
+    local timer_end = function ()
+        timer:kill()
+        timer = nil
+        func()
+    end
+
+    return function ()
+        if timer then
+            timer:kill()
+        end
+        timer = mp.add_timeout(wait, timer_end)
+    end
+end
 
 local client_script = [=[
 #!/bin/bash
@@ -226,13 +251,13 @@ local unique = mp.utils.getpid()
 options.socket = options.socket .. unique
 options.thumbnail = options.thumbnail .. unique
 
-if options.use_lua_io then
+if options.direct_io then
     if os_name == "Windows" then
         winapi.socket_wc = winapi.MultiByteToWideChar("\\\\.\\pipe\\" .. options.socket)
     end
 
     if winapi.socket_wc == "" then
-        options.use_lua_io = false
+        options.direct_io = false
     end
 end
 
@@ -298,6 +323,15 @@ local function info(w, h)
         display_w, display_h = h, w
     end
 
+    network = mp.get_property_bool("demuxer-via-network", false)
+    local image = mp.get_property_native("current-tracks/video/image", false)
+    local albumart = image and mp.get_property_native("current-tracks/video/albumart", false)
+    disabled = not (w and h) or
+        has_vid == 0 or
+        (network and not options.network) or
+        (albumart and not options.audio) or
+        (image and not albumart)
+
     local json, err = mp.utils.format_json({width=display_w, height=display_h, disabled=disabled, socket=options.socket, thumbnail=options.thumbnail, overlay_id=options.overlay_id})
     mp.commandv("script-message", "thumbfast-info", json)
 end
@@ -321,9 +355,12 @@ local function spawn(time)
 
     remove_thumbnail_files()
 
+    local vid = mp.get_property_number("vid")
+    has_vid = vid or 0
+
     local args = {
         mpv_path, path, "--no-config", "--msg-level=all=no", "--idle", "--pause", "--keep-open=always", "--really-quiet", "--no-terminal",
-        "--edition="..(mp.get_property_number("edition") or "auto"), "--vid="..(mp.get_property_number("vid") or "auto"), "--no-sub", "--no-audio",
+        "--edition="..(mp.get_property_number("edition") or "auto"), "--vid="..(vid or "auto"), "--no-sub", "--no-audio",
         "--start="..time, "--hr-seek=no",
         "--ytdl-format=worst", "--demuxer-readahead-secs=0", "--demuxer-max-bytes=128KiB",
         "--vd-lavc-skiploopfilter=all", "--vd-lavc-software-fallback=1", "--vd-lavc-fast", "--vd-lavc-threads=2", "--hwdec="..(options.hwdec and "auto" or "no"),
@@ -335,10 +372,6 @@ local function spawn(time)
 
     if not pre_0_30_0 then
         table.insert(args, "--sws-allow-zimg=no")
-    end
-
-    if os_name == "Mac" then
-        table.insert(args, "--macos-app-activation-policy=prohibited")
     end
 
     if os_name == "Windows" then
@@ -358,10 +391,11 @@ local function spawn(time)
     end
 
     spawned = true
+    spawn_waiting = true
 
     subprocess(args, true,
         function(success, result)
-            if success == false or result.status ~= 0 then
+            if spawn_waiting and (success == false or result.status ~= 0) then
                 mp.msg.error("mpv subprocess create failed")
             end
             spawned = false
@@ -372,7 +406,7 @@ end
 local function run(command)
     if not spawned then return end
 
-    if options.use_lua_io then
+    if options.direct_io then
         local hPipe = winapi.C.CreateFileW(winapi.socket_wc, winapi.GENERIC_WRITE, 0, nil, winapi.OPEN_EXISTING, winapi._createfile_pipe_flags, nil)
         if hPipe ~= winapi.INVALID_HANDLE_VALUE then
             local buf = command .. "\n"
@@ -485,6 +519,7 @@ local function check_new_thumb()
     move_file(options.thumbnail, tmp)
     local finfo = mp.utils.file_info(tmp)
     if not finfo then return false end
+    spawn_waiting = false
     if first_file then
         request_seek()
         first_file = false
@@ -494,7 +529,10 @@ local function check_new_thumb()
         move_file(tmp, options.thumbnail..".bgra")
 
         real_w, real_h = w, h
-        if real_w then info(real_w, real_h) end
+        if real_w and (real_w ~= last_real_w or real_h ~= last_real_h) then
+            last_real_w, last_real_h = real_w, real_h
+            info(real_w, real_h)
+        end
         return true
     end
     return false
@@ -554,13 +592,24 @@ local function watch_changes()
     local vf_reset = vf_string(filters_reset)
     local rotate = mp.get_property_number("video-rotate", 0)
 
+    local resized = old_w ~= effective_w or
+        old_h ~= effective_h or
+        last_vf_reset ~= vf_reset or
+        (last_rotate % 180) ~= (rotate % 180) or
+        par ~= last_par
+
+    if resized then
+        last_rotate = rotate
+        info(effective_w, effective_h)
+    elseif last_has_vid ~= has_vid and has_vid ~= 0 then
+        info(effective_w, effective_h)
+    end
+
     if spawned then
-        if old_w ~= effective_w or old_h ~= effective_h or last_vf_reset ~= vf_reset or (last_rotate % 180) ~= (rotate % 180) or par ~= last_par then
-            last_rotate = rotate
+        if resized then
             -- mpv doesn't allow us to change output size
             run("quit")
             clear()
-            info(effective_w, effective_h)
             spawned = false
             spawn(last_seek_time or mp.get_property_number("time-pos", 0))
         else
@@ -574,22 +623,39 @@ local function watch_changes()
             end
         end
     else
-        if old_w ~= effective_w or old_h ~= effective_h or last_vf_reset ~= vf_reset or (last_rotate % 180) ~= (rotate % 180) or par ~= last_par then
-            last_rotate = rotate
-            info(effective_w, effective_h)
-        end
         last_vf_runtime = vf_string(filters_runtime)
     end
 
     last_vf_reset = vf_reset
     last_rotate = rotate
     last_par = par
+    last_has_vid = has_vid
 end
 
+local watch_changes_debounce = debounce(watch_changes, 500)
+
 local function sync_changes(prop, val)
-    if spawned and val then
-        run("set "..prop.." "..val)
+    if val == nil then return end
+
+    if type(val) == "boolean" then
+        if prop == "vid" then
+            has_vid = 0
+            last_has_vid = 0
+            info(effective_w, effective_h)
+            clear()
+            return
+        end
+        val = val and "yes" or "no"
     end
+
+    if prop == "vid" then
+        has_vid = 1
+    end
+
+    if not spawned then return end
+
+    run("set "..prop.." "..val)
+    watch_changes_debounce()
 end
 
 local function file_load()
@@ -597,11 +663,6 @@ local function file_load()
     real_w, real_h = nil, nil
     last_seek_time = nil
 
-    network = mp.get_property_bool("demuxer-via-network", false)
-    local image = mp.get_property_native("current-tracks/video/image", false)
-    local albumart = image and mp.get_property_native("current-tracks/video/albumart", false)
-
-    disabled = (network and not options.network) or (albumart and not options.audio) or (image and not albumart)
     calc_dimensions()
     info(effective_w, effective_h)
     if disabled then return end
@@ -624,7 +685,7 @@ end
 
 mp.observe_property("display-hidpi-scale", "native", watch_changes)
 mp.observe_property("video-out-params", "native", watch_changes)
-mp.observe_property("vf", "native", watch_changes)
+mp.observe_property("vf", "native", watch_changes_debounce)
 mp.observe_property("vid", "native", sync_changes)
 mp.observe_property("edition", "native", sync_changes)
 
