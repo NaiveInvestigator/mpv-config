@@ -1,10 +1,24 @@
-DEBUG = false
--- Change this to the location of MPVMediaControl.exe, use \\ for path separator
-script_dir = mp.get_script_directory()
-MPVMC_PATH = script_dir .. "/MPVMediaControl.exe"
-
+local mp = require 'mp'
 local utils = require 'mp.utils'
-pid = utils.getpid()
+local opt = require 'mp.options'
+
+local o = {
+    debug = false,
+    -- Path to executable (MPVMediaControl.exe)
+    binary_path = "~~/scripts/SMTC/MPVMediaControl.exe",
+    -- If you want to delay taking screenshot for videos, set this to the number of delayed seconds
+    delayed_sec = 3,
+}
+
+opt.read_options(o, "notify_media")
+
+o.binary_path = mp.command_native({ "expand-path", o.binary_path })
+
+local pid = utils.getpid()
+local start_of_file = true
+local new_file = false
+local yt_thumbnail = false
+local yt_failed = false
 
 -- Print contents of `tbl`, with indentation.
 -- `indent` sets the initial level of indentation.
@@ -24,7 +38,7 @@ function tprint (tbl, indent)
 end
 
 function debug_log(message)
-    if DEBUG then
+    if o.debug then
         if not message then
             print("DEBUG: nil")
             return
@@ -71,14 +85,53 @@ function tohex(str)
 end
 
 function save_shot(path)
+    if youtube_thumbail(path) then
+        local shot_path_encoded = encode_element(shot_path)
+        message_content = "^[setShot](pid=" .. pid .. ")(shot_path=" .. shot_path_encoded .. ")$"
+        write_to_socket(message_content)
+        return
+    end
+    if start_of_file and media_type() == "video" and o.delayed_sec ~= 0 then
+        mp.add_timeout(o.delayed_sec, function() save_shot(path) end)
+        start_of_file = false
+        return
+    end
     result = mp.commandv("screenshot-to-file", path)
     if not result then
-        mp.add_timeout(0.1, function() save_shot(path) end)
+        mp.add_timeout(0.5, function() save_shot(path) end)
     else
         local shot_path_encoded = encode_element(shot_path)
         message_content = "^[setShot](pid=" .. pid .. ")(shot_path=" .. shot_path_encoded .. ")$"
         write_to_socket(message_content)
     end
+end
+
+function youtube_thumbail(path)
+    if not yt_thumbnail then
+        debug_log(mp.get_property("path"))
+        if not yt_failed and string.find(mp.get_property("path"), "www.youtube.com") then
+        	-- generate a url to the thumbnail file
+        	vid_id = mp.get_property("filename")
+        	vid_id = string.gsub(vid_id, "watch%?v=", "") -- Strip possible prefix.
+        	vid_id = string.sub(vid_id, 1, 11) -- Strip possible suffix.
+        	
+        	thumb_url = "https://i.ytimg.com/vi/" .. vid_id .. "/maxresdefault.jpg"
+        	
+        	local dl_process = mp.command_native({
+        	    name = "subprocess",
+        	    playback_only = true,
+        	    args = {"curl", "-L", "-s", "-o", shot_path, thumb_url},
+        	})
+        	
+        	if dl_process.status == 0 then
+        	    yt_thumbnail = true
+                return true
+        	end
+        end
+        yt_failed = true
+        return false
+    end
+    return true
 end
 
 function media_type()
@@ -101,7 +154,7 @@ function notify_metadata_updated()
     artist = get_metadata(metadata, { "artist", "ARTIST", "Artist" })
     title = get_metadata(metadata, { "title", "TITLE", "Title", "icy-title" })
 
-    if not artist or artist == "" or not title or title == "" then
+    if media_type() == "music" and (not artist or artist == "" or not title or title == "") then
         chapter_metadata = mp.get_property_native("chapter-metadata")
 
         if chapter_metadata then
@@ -141,7 +194,9 @@ function notify_metadata_updated()
 
     local user_path = mp.command_native({"expand-path", "~~/"})
     shot_path = user_path .. "\\" .. pid .. ".jpg"
-    save_shot(shot_path)
+    if mp.get_property("video-codec") then
+        save_shot(shot_path)
+    end
 
     message_content = "^[setFile](pid=" .. pid .. ")(title=" .. title .. ")(artist=" .. artist .. ")(path=" .. path .. ")(type=" .. media_type() .. ")$"
     write_to_socket(message_content)
@@ -174,18 +229,29 @@ function run_mpvmc_program()
         capture_stdout = false,
         capture_stderr = false,
         detach = true,
-        args = { MPVMC_PATH },
+        args = { o.binary_path },
     })
 end
 
 mp.set_property("options/input-ipc-server", "\\\\.\\pipe\\mpvsocket_" .. pid)
 
-mp.register_event("file-loaded", notify_current_file)
-mp.observe_property("media-title", nil, notify_metadata_updated)
-mp.observe_property("metadata", nil, notify_metadata_updated)
-mp.observe_property("chapter", nil, notify_metadata_updated)
-mp.register_event("end-file", play_state_changed)
-mp.observe_property("core-idle", nil, play_state_changed)
+function start_register_event()
+    if new_file then
+        notify_current_file()
+        start_of_file = true
+        new_file = false
+        yt_thumbnail = false
+        yt_failed = false
+        mp.observe_property("media-title", nil, notify_metadata_updated)
+        mp.observe_property("metadata", nil, notify_metadata_updated)
+        mp.observe_property("chapter", nil, notify_metadata_updated)
+        mp.register_event("end-file", play_state_changed)
+        mp.observe_property("core-idle", nil, play_state_changed)
+    end
+end
+
+mp.register_event("file-loaded", function() new_file = true end)
+mp.register_event("playback-restart", start_register_event)
 
 function on_quit()
     if shot_path then
