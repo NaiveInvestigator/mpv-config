@@ -5,7 +5,7 @@ local opt = require 'mp.options'
 local o = {
     debug = false,
     -- Path to executable (MPVMediaControl.exe)
-    binary_path = ""~~/scripts/SMTC/MPVMediaControl.exe",
+    binary_path = "~~/scripts/SMTC/MPVMediaControl.exe",
     -- If you want to delay taking screenshot for videos, set this to the number of delayed seconds
     delayed_sec = 3,
     -- Name of mpv's input-ipc-server (defaults to mpvsocket_{pid}), string "{pid}" in the value will be automatically replaced with the ID of mpv process
