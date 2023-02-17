@@ -5,6 +5,7 @@ My personal mpv config (for windows only).
 A preview of how this config looks:
 ### User Interface (UOSC)
 ![image](https://user-images.githubusercontent.com/72654596/219562727-ed56a3d9-898b-4160-b2e0-61a7ea59965a.png)
+![image](https://user-images.githubusercontent.com/72654596/219573915-a293a82b-0c14-42fb-b115-5a40351b9ca0.png)
 ![image](https://user-images.githubusercontent.com/72654596/219563959-ac3dc446-4a44-4dbe-9d4b-2687c82ff391.png)
 ### Windows integration
 ![image](https://user-images.githubusercontent.com/72654596/219563651-1c1d132d-8a0a-4cd3-b58f-a86d25ae90cc.png)
