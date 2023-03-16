@@ -38,10 +38,10 @@ function OSDClock:_show_clock()
     local osd_w, osd_h, aspect = mp.get_osd_size()
 
     local scale = 2
-    local fontsize = tonumber(mp.get_property("options/osd-font-size")) / scale
-        fontsize = math.floor(fontsize)
+    --local fontsize = tonumber(mp.get_property("options/osd-font-size")) / scale
+        --fontsize = math.floor(fontsize)
     -- msg.info(fontsize)
-    --
+    fontsize = tonumber(mp.get_property("options/osd-font-size"))
     local now = os.date("%H:%M")
     local ass = assdraw:ass_new()
     ass:new_event()
