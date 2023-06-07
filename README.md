@@ -1,5 +1,5 @@
 # mpv-config
-My personal mpv config for linux :>
+My personal mpv config for linux :> (Tested only on KDE Wayland)
 
 # Preview
 A preview of how this config looks:
