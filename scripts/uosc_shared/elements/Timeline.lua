@@ -17,6 +17,10 @@ function Timeline:init()
 	self.is_hovered = false
 	self.has_thumbnail = false
 
+	-- Delayed seeking timer
+	self.seek_timer = mp.add_timeout(0.05, function() self:set_from_cursor() end)
+	self.seek_timer:kill()
+
 	-- Release any dragging when file gets unloaded
 	mp.register_event('end-file', function() self.pressed = false end)
 end
@@ -109,6 +113,7 @@ function Timeline:on_prop_border() self:update_dimensions() end
 function Timeline:on_prop_fullormaxed() self:update_dimensions() end
 function Timeline:on_display() self:update_dimensions() end
 function Timeline:handle_cursor_up()
+	self.seek_timer:kill()
 	if self.pressed then
 		mp.set_property_native('pause', self.pressed.pause)
 		self.pressed = false
@@ -118,8 +123,6 @@ function Timeline:on_global_mouse_leave()
 	self.pressed = false
 end
 
-Timeline.seek_timer = mp.add_timeout(0.05, function() Elements.timeline:set_from_cursor() end)
-Timeline.seek_timer:kill()
 function Timeline:on_global_mouse_move()
 	if self.pressed then
 		self.pressed.distance = self.pressed.distance + get_point_to_point_proximity(self.pressed.last, cursor)
@@ -391,7 +394,7 @@ function Timeline:render()
 		then
 			local scale_x, scale_y = display.scale_x, display.scale_y
 			local border, margin_x, margin_y = math.ceil(2 * scale_x), round(10 * scale_x), round(5 * scale_y)
-			local thumb_x_margin, thumb_y_margin = border + margin_x, border + margin_y
+			local thumb_x_margin, thumb_y_margin = border + margin_x + bax, border + margin_y
 			local thumb_width, thumb_height = thumbnail.width, thumbnail.height
 			local thumb_x = round(clamp(
 				thumb_x_margin, cursor_x * scale_x - thumb_width / 2,
@@ -408,7 +411,7 @@ function Timeline:render()
 
 		-- Chapter title
 		if #state.chapters > 0 then
-			local _, chapter = itable_find(state.chapters, function(c) return hovered_seconds >= c.time end, true)
+			local _, chapter = itable_find(state.chapters, function(c) return hovered_seconds >= c.time end, #state.chapters, 1)
 			if chapter and not chapter.is_end_only then
 				ass:tooltip(tooltip_anchor, chapter.title_wrapped, {
 					size = self.font_size, offset = 10, responsive = false, bold = true,

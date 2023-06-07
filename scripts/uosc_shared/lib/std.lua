@@ -76,14 +76,24 @@ function itable_index_of(itable, value)
 end
 
 ---@param itable table
+---@param value any
+---@return boolean
+function itable_has(itable, value)
+	return itable_index_of(itable, value) ~= nil
+end
+
+---@param itable table
 ---@param compare fun(value: any, index: number)
----@param from_end? boolean Search from the end of the table.
+---@param from? number Where to start search, defaults to `1`.
+---@param to? number Where to end search, defaults to `#itable`.
 ---@return number|nil index
 ---@return any|nil value
-function itable_find(itable, compare, from_end)
-	local from, to, step = from_end and #itable or 1, from_end and 1 or #itable, from_end and -1 or 1
-	for index = from, to, step do
-		if compare(itable[index], index) then return index, itable[index] end
+function itable_find(itable, compare, from, to)
+	from, to = from or 1, to or #itable
+	for index = from, to, from < to and 1 or -1 do
+		if index > 0 and index <= #itable and compare(itable[index], index) then
+			return index, itable[index]
+		end
 	end
 end
 
@@ -99,8 +109,21 @@ end
 
 ---@param itable table
 ---@param value any
-function itable_remove(itable, value)
-	return itable_filter(itable, function(item) return item ~= value end)
+function itable_delete_value(itable, value)
+	for index = 1, #itable, 1 do
+		if itable[index] == value then table.remove(itable, index) end
+	end
+	return itable
+end
+
+---@param itable table
+---@param transformer fun(value: any, index: number) : any
+function itable_map(itable, transformer)
+	local result = {}
+	for index, value in ipairs(itable) do
+		result[index] = transformer(value, index)
+	end
+	return result
 end
 
 ---@param itable table

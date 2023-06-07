@@ -21,6 +21,7 @@ local opts = {
     download_subtitle_binding = "ctrl+s",
     download_video_embed_subtitle_binding = "ctrl+i",
     select_range_binding = "ctrl+r",
+    download_mpv_playlist = "",
 
     -- Specify audio format: "best", "aac","flac", "mp3", "m4a", "opus", "vorbis", or "wav"
     audio_format = "mp3",
@@ -54,9 +55,13 @@ local opts = {
     -- Restrict filenames to only ASCII characters, and avoid "&" and spaces in filenames
     restrict_filenames = true,
 
-    -- Download the whole playlist (false) or only one video (true)
+    -- Download the whole Youtube playlist (false) or only one video (true)
     -- Same as youtube-dl --no-playlist
     no_playlist = true,
+
+    -- Download the whole mpv playlist (true) or only the current video (false)
+    -- This is the default setting, it can be overwritten with the download_mpv_playlist key binding
+    mpv_playlist = false,
 
     -- Use an archive file, see youtube-dl --download-archive
     -- You have these options:
@@ -94,6 +99,10 @@ local opts = {
     -- Same as youtube-dl --sub-format best
     sub_format = "best",
 
+    -- Download auto-generated subtitles
+    -- Same as youtube-dl --write-auto-subs / --no-write-auto-subs
+    sub_auto_generated = false,
+
     -- Log file for download errors
     log_file = "",
 
@@ -118,9 +127,28 @@ local opts = {
     -- Currently only works on Windows with the new wt terminal
     -- If open_new_terminal_autoclose is true, then the terminal window
     -- will close after the download, even if there were errors
+    -- If mpv_playlist is true and the whole mpv playlist should be
+    -- downloaded, then all the downloads are scheduled immediately.
+    -- Before each download is started, the script waits the given
+    -- timeout in seconds
     open_new_terminal = false,
     open_new_terminal_autoclose = false,
+    open_new_terminal_timeout = 3,
+
+    -- Used to localize uosc-submenu content
+    -- Must use json format, example for Chinese: [{"Download": "下载","Audio": "音频"}]
+    locale_content = [[
+        []
+    ]],
 }
+
+local function table_size(t)
+    local s = 0
+    for _, _ in pairs(t) do
+        s = s + 1
+    end
+    return s
+end
 
 local function exec(args, capture_stdout, capture_stderr)
     local ret = mp.command_native({
@@ -178,6 +206,18 @@ end
 
 --Read configuration file
 (require 'mp.options').read_options(opts, "youtube-download")
+
+--Read text string
+local locale_content = utils.parse_json(opts.locale_content)
+
+local function locale(str)
+    if str and locale_content then
+        for k, v in ipairs(locale_content) do
+            return v[str] or str
+        end
+    end
+    return str
+end
 
 --Read command line arguments
 local ytdl_raw_options = mp.get_property("ytdl-raw-options")
@@ -250,6 +290,10 @@ local start_time_formated = nil
 local end_time_seconds = nil
 local end_time_formated = nil
 
+local switches = {
+    mpv_playlist_toggle = opts.mpv_playlist,
+}
+local mpv_playlist_status = nil
 local is_downloading = false
 local process_id = nil
 local should_cancel = false
@@ -267,15 +311,34 @@ local function disable_select_range()
     mp.remove_key_binding("select-range-set-right")
 end
 
-
 local function download(download_type, config_file, overwrite_opts)
-    video_format = opts.video_format
+    if switches.mpv_playlist_toggle and mpv_playlist_status == nil then
+        -- Start downloading the whole mpv playlist
+        local playlist_length = mp.get_property_number('playlist-count', 0)
+        if playlist_length == 0 then
+            mpv_playlist_status = nil
+            mp.osd_message("Download failed: mpv playlist is empty", 5)
+            return
+        end
+
+        -- Store current playlist
+        mpv_playlist_status = {}
+        local i = 0
+        while i < playlist_length do
+          local url = mp.get_property('playlist/'..i..'/filename')
+          if url ~= nil and (url:find("ytdl://") == 1 or url:find("https?://") == 1) then
+            mpv_playlist_status[url] = false
+          end
+          i = i + 1
+        end
+    end
+
+    local video_format = opts.video_format
     if overwrite_opts ~= nil then
         if overwrite_opts.video_format ~= nil  then
             video_format = overwrite_opts.video_format
         end
     end
-
 
     local start_time = os.date("%c")
     if is_downloading then
@@ -297,7 +360,31 @@ local function download(download_type, config_file, overwrite_opts)
 
     local ass0 = mp.get_property("osd-ass-cc/0")
     local ass1 =  mp.get_property("osd-ass-cc/1")
-    local url = mp.get_property("path")
+
+    local mpv_playlist_i = 0
+    local mpv_playlist_n = 0
+    local url = nil
+    if mpv_playlist_status ~= nil then
+        for key, value in pairs(mpv_playlist_status) do
+            if not value then
+                if url == nil then
+                    url = key
+                end
+            else
+                mpv_playlist_i = mpv_playlist_i + 1
+            end
+            mpv_playlist_n = mpv_playlist_n + 1
+        end
+
+        if url == nil then
+            local n = table_size(mpv_playlist_status)
+            mpv_playlist_status = nil
+            mp.osd_message("Finished downloading mpv playlist (".. tostring(n) .. " entries)", 5)
+            return
+        end
+    else
+        url = mp.get_property("path")
+    end
 
     if url:find("ytdl://") ~= 1 and url:find("https?://") ~= 1
     then
@@ -370,6 +457,11 @@ local function download(download_type, config_file, overwrite_opts)
                 table.insert(command, "--sub-format")
                 table.insert(command, opts.sub_format)
             end
+            if opts.sub_auto_generated then
+                table.insert(command, "--write-auto-subs")
+            else
+                table.insert(command, "--no-write-auto-subs")
+            end
             if select_range_mode > 0 then
                 mp.osd_message("Range mode is not available for subtitle-only download", 10)
                 is_downloading = false
@@ -401,12 +493,17 @@ local function download(download_type, config_file, overwrite_opts)
             end
         else --DOWNLOAD.VIDEO or DOWNLOAD.VIDEO_EMBED_SUBTITLE
             if download_type == DOWNLOAD.VIDEO_EMBED_SUBTITLE then
-                table.insert(command, "--all-subs")
-                table.insert(command, "--write-sub")
                 table.insert(command, "--embed-subs")
+                table.insert(command, "--sub-lang")
+                table.insert(command, opts.sub_lang)
                 if not_empty(opts.sub_format) then
                     table.insert(command, "--sub-format")
                     table.insert(command, opts.sub_format)
+                end
+                if opts.sub_auto_generated then
+                    table.insert(command, "--write-auto-subs")
+                else
+                    table.insert(command, "--no-write-auto-subs")
                 end
             end
             if not_empty(video_format) then
@@ -565,6 +662,11 @@ local function download(download_type, config_file, overwrite_opts)
                 table.insert(command, "--sub-format")
                 table.insert(command, opts.sub_format)
             end
+            if opts.sub_auto_generated then
+                table.insert(command, "--write-auto-subs")
+            else
+                table.insert(command, "--no-write-auto-subs")
+            end
             local randomName = "tmp_" .. tostring(math.random())
             table.insert(command, "-o")
             table.insert(command, randomName .. ".%(ext)s")
@@ -622,15 +724,52 @@ local function download(download_type, config_file, overwrite_opts)
     end
 
     -- Show download indicator
-    mp.set_osd_ass(0, 0, "{\\an9}{\\fs12}⌛💾")
+    if mpv_playlist_n > 0 then
+        mp.set_osd_ass(0, 0, "{\\an9}{\\fs12}" .. tostring(mpv_playlist_i) .."/" .. tostring(mpv_playlist_n) .. "⌛💾")
+    else
+      mp.set_osd_ass(0, 0, "{\\an9}{\\fs12}⌛💾")
+    end
 
     -- Callback
     local function download_ended(success, ret, error)
+        if mpv_playlist_status ~= nil then
+            mpv_playlist_status[url] = true
+        end
+
+        local playlist_finished = -1
+        if mpv_playlist_status ~= nil then
+            local to_do = false
+            for _, value in pairs(mpv_playlist_status) do
+                if not value then
+                    to_do = true
+                    break
+                end
+            end
+            if not to_do then
+                playlist_finished = table_size(mpv_playlist_status)
+                mpv_playlist_status = nil
+            end
+        end
+
         process_id = nil
         if opts.open_new_terminal then
             is_downloading = false
             -- Hide download indicator
             mp.set_osd_ass(0, 0, "")
+
+            -- Start next download if downloading whole mpv playlist
+            if playlist_finished ~= -1 then
+                mp.osd_message("Started last download of mpv playlist (".. tostring(playlist_finished) .. " entries)", 5)
+            elseif mpv_playlist_status ~= nil then
+                -- Wait a short time starting the next download
+                -- otherwise wt.exe will stop the previous command and not open a new tab
+                local n = opts.open_new_terminal_timeout
+                if n == nil or n < 1 then
+                    n = 1
+                end
+                exec({"ping", "-n", tostring(n), "localhost"}, false, false)
+                download(download_type, config_file, overwrite_opts)
+            end
             return
         end
 
@@ -739,27 +878,27 @@ local function download(download_type, config_file, overwrite_opts)
         local osd_time = 5
         -- Find filename or directory
         if filename then
-            local filepath
+            local filepath_display
             local basepath
             if filename:find("/") == nil and filename:find("\\") == nil then
               basepath = utils.getcwd()
-              filepath = path_join(utils.getcwd(), filename)
+              filepath_display = path_join(utils.getcwd(), filename)
             else
               basepath = ""
-              filepath = filename
+              filepath_display = filename
             end
 
-            if filepath:len() < 100 then
-                osd_text = osd_text .. ass0 .. "{\\fs12} " .. filepath .. " {\\fs20}" .. ass1
+            if filepath_display:len() < 100 then
+                osd_text = osd_text .. ass0 .. "{\\fs12} " .. filepath_display .. " {\\fs20}" .. ass1
             elseif basepath == "" then
-                osd_text = osd_text .. ass0 .. "{\\fs8} " .. filepath .. " {\\fs20}" .. ass1
+                osd_text = osd_text .. ass0 .. "{\\fs8} " .. filepath_display .. " {\\fs20}" .. ass1
             else
                 osd_text = osd_text .. ass0 .. "{\\fs11} " .. basepath .. "\n" .. filename .. " {\\fs20}" ..  ass1
             end
             if wrote_error_log then
                 -- Write filename and end time to log file
                 local file = io.open (opts.log_file , "a+")
-                file:write("[" .. filepath .. "]\n")
+                file:write("[" .. filepath_display .. "]\n")
                 file:write(os.date("[end %c]\n"))
                 file:close()
             end
@@ -787,6 +926,12 @@ local function download(download_type, config_file, overwrite_opts)
             end
         end
 
+        if playlist_finished ~= -1 then
+            osd_text = osd_text .. "\nFinished downloading mpv playlist (".. tostring(playlist_finished) .. " entries)"
+        elseif mpv_playlist_status ~= nil then
+            download(download_type, config_file, overwrite_opts)
+        end
+
         mp.osd_message(osd_text, osd_time)
     end
 
@@ -812,7 +957,7 @@ local function download(download_type, config_file, overwrite_opts)
         end
 
         -- Escape restricted characters on Windows
-        restricted = "&<>|"
+        local restricted = "&<>|"
         for key, value in ipairs(command) do
             command[key] = value:gsub("["..  restricted .. "]", "^%0")
         end
@@ -942,12 +1087,21 @@ local function select_range()
     select_range_show()
 end
 
+local function download_mpv_playlist()
+    -- Toggle for downloading the whole mpv-playlist
+    switches.mpv_playlist_toggle = not switches.mpv_playlist_toggle
+    if switches.mpv_playlist_toggle then
+        mp.osd_message("Download whole mpv playlist: Enabled", 3)
+    else
+        mp.osd_message("Download whole mpv playlist: Disabled", 3)
+    end
+end
 
-function menu_command(str)
+local function menu_command(str)
     return string.format('script-message-to %s %s', script_name, str)
 end
 
-function create_menu_data()
+local function create_menu_data()
     -- uosc menu
 
     local current_format = get_current_format()
@@ -958,11 +1112,11 @@ function create_menu_data()
     end
 
     if not_empty(opts.remux_video) then
-        video_format = video_format .. "/" .. tostring(remux_video)
+        video_format = video_format .. "/" .. tostring(opts.remux_video)
     end
 
     if not_empty(opts.recode_video) then
-        video_format = video_format .. "/" .. tostring(recode_video)
+        video_format = video_format .. "/" .. tostring(opts.recode_video)
     end
 
     local audio_format = ""
@@ -983,50 +1137,55 @@ function create_menu_data()
 
     local items = {
       {
-        title = 'Audio',
+        title = locale('Audio'),
         hint = tostring(audio_format),
         icon = 'audiotrack',
         value = menu_command('audio_default_quality'),
         keep_open = false
       },
       {
-        title = 'Video (Current quality)',
+        title = locale('Video (Current quality)'),
         hint = tostring(current_format),
         icon = 'play_circle_filled',
         value = menu_command('video_current_quality'),
         keep_open = false
       },
       {
-        title = 'Video (Default quality)',
+        title = locale('Video (Default quality)'),
         hint = tostring(video_format),
         icon = 'download',
         value = menu_command('video_default_quality'),
         keep_open = false
       },
       {
-        title = 'Video with subtitles',
+        title = locale('Video with subtitles'),
         icon = 'hearing_disabled',
         value = menu_command('embed_subtitle_default_quality'),
         keep_open = false
       },
       {
-        title = 'Subtitles',
+        title = locale('Subtitles'),
         hint = tostring(sub_format),
         icon = 'subtitles',
         value = menu_command('subtitle'),
         keep_open = false
       },
       {
-        title = 'Select range',
+        title = locale('Select range'),
         icon = 'content_cut',
         value = menu_command('cut'),
         keep_open = false
+      },
+      {
+        title = locale('Download whole mpv playlist'),
+        icon = switches.mpv_playlist_toggle and 'check_box' or 'check_box_outline_blank',
+        value = menu_command('set-state-bool mpv_playlist_toggle ' .. (switches.mpv_playlist_toggle and 'no' or 'yes'))
       },
     }
 
     if not_empty(opts.download_video_config_file) then
         table.insert(items, {
-            title = 'Video (Config file)',
+            title = locale('Video (Config file)'),
             icon = 'build',
             value = menu_command('video_config_file'),
             keep_open = false
@@ -1034,7 +1193,7 @@ function create_menu_data()
     end
     if not_empty(opts.download_audio_config_file) then
         table.insert(items, {
-            title = 'Audio (Config file)',
+            title = locale('Audio (Config file)'),
             icon = 'build',
             value = menu_command('audio_config_file'),
             keep_open = false
@@ -1042,7 +1201,7 @@ function create_menu_data()
     end
     if not_empty(opts.download_subtitle_config_file) then
         table.insert(items, {
-            title = 'Subtitle (Config file)',
+            title = locale('Subtitle (Config file)'),
             icon = 'build',
             value = menu_command('subtitle_config_file'),
             keep_open = false
@@ -1050,7 +1209,7 @@ function create_menu_data()
     end
     if not_empty(opts.download_video_embed_subtitle_config_file) then
         table.insert(items, {
-            title = 'Video with subtitles (Config file)',
+            title = locale('Video with subtitles (Config file)'),
             icon = 'build',
             value = menu_command('video_embed_subtitle_config_file'),
             keep_open = false
@@ -1058,7 +1217,7 @@ function create_menu_data()
     end
     if not_youtube then
         table.insert(items, 1, {
-            title = 'Current file is not a youtube video',
+            title = locale('Current file is not a youtube video'),
             icon = 'warning',
             value = menu_command(''),
             bold = true,
@@ -1069,7 +1228,7 @@ function create_menu_data()
 
     return {
       type = 'yt_download_menu',
-      title = 'Download',
+      title = locale('Download'),
       keep_open = true,
       items = items
     }
@@ -1123,8 +1282,19 @@ end
 if not_empty(opts.select_range_binding) then
     mp.add_key_binding(opts.select_range_binding, "select-range-start", select_range)
 end
+if not_empty(opts.download_mpv_playlist) then
+    mp.add_key_binding(opts.download_mpv_playlist, "download-mpv-playlist", download_mpv_playlist)
+end
+
 
 -- Open the uosc menu:
+
+mp.register_script_message('set-state-bool', function(prop, value)
+    switches[prop] = value == 'yes'
+    -- Update currently opened menu
+    local json = utils.format_json(create_menu_data())
+    mp.commandv('script-message-to', 'uosc', 'update-menu', json)
+  end)
 
 mp.register_script_message('menu', function()
     local json = utils.format_json(create_menu_data())
@@ -1155,6 +1325,10 @@ end)
 
 mp.register_script_message('cut', function()
     select_range()
+end)
+
+mp.register_script_message('toggle_download_mpv_playlist', function()
+    download_mpv_playlist()
 end)
 
 mp.register_script_message('video_config_file', function()

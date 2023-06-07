@@ -82,7 +82,7 @@ local function save_lyrics(lyrics)
     lrc:close()
 
     if lyrics:match('^%[') then
-        mp.command(current_sub_path and 'sub-reload 1' or 'rescan-external-files')
+        mp.command(current_sub_path and 'sub-reload' or 'rescan-external-files')
         mp.osd_message(success_message)
     else
         mp.osd_message('Lyrics without timestamps downloaded')
@@ -226,7 +226,7 @@ mp.add_key_binding('Alt+n', 'netease-download', function()
     end
 end)
 
-mp.add_key_binding('Ctrl+o', 'offset-sub', function()
+mp.add_key_binding('Alt+o', 'offset-sub', function()
     local sub_path = mp.get_property('current-tracks/sub/external-filename')
 
     if not sub_path then

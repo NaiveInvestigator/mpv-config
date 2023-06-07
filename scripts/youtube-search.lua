@@ -47,8 +47,7 @@ local ui = require "user-input-module"
 local list = require "scroll-list"
 
 local o = {
-    API_key = "AIzaSyDl4jaf9ybQsabluD01m3YzxfnnUXCf7aA",
-
+    API_key = "AIzaSyARP0gOXmbWlbk5BbxPNRdDg_iDA9rghpM",
     --number of search results to show in the list
     num_results = 40,
 
@@ -187,10 +186,18 @@ local function send_request(type, queries, API_path)
     })
 
     local response = utils.parse_json(request.stdout)
-    msg.trace(utils.to_string(response))
-    if request.status ~= 0 then msg.error(request.stderr) ; return nil end
+    msg.trace(utils.to_string(request))
+
+    if request.status ~= 0 then
+        msg.error(request.stderr)
+        return nil
+    end
     if not response then
         msg.error("Could not parse response:")
+        msg.error(request.stdout)
+        return nil
+    end
+    if response.error then
         msg.error(request.stdout)
         return nil
     end
@@ -286,7 +293,7 @@ end
 
 local function search(query)
     local response = search_request(get_search_queries(query, o.invidious), o.API_path, o.invidious)
-    if not response and o.fallback_API_path ~= "" then
+    if not response and o.fallback_API_path ~= "/" then
         msg.info("search failed - attempting fallback")
         response = search_request(get_search_queries(query, o.fallback_invidious), o.fallback_API_path, o.fallback_invidious)
     end
