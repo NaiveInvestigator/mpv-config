@@ -27,7 +27,6 @@ Make sure to install them with your respective package manager or add them to yo
     mkdir ~/.config/mpv
     cd ~/.config/mpv
     git clone https://github.com/NaiveInvestigator/mpv-config -b linux
-    git checkout linux
     ```
 * Additional cool scripts you can try setting up! 
 
